@@ -3,6 +3,7 @@
 **/data/
 **/__pycache__/
 **/.venv/
+.vercel/
 *.pyc
 *.tsbuildinfo
 .env

@@ -166,10 +166,17 @@ def init_db():
         db.execute(f"""
         CREATE TABLE IF NOT EXISTS datasets (
           id TEXT PRIMARY KEY, name TEXT NOT NULL, kind TEXT NOT NULL,
+          owner_user_id TEXT,
           created_at {created_at_type} NOT NULL DEFAULT CURRENT_TIMESTAMP,
           current_version INTEGER NOT NULL DEFAULT 1
         )
         """)
+        if getattr(db,"is_postgres",False):
+            dataset_fields={row["column_name"] for row in db.execute("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='datasets'").fetchall()}
+        else:
+            dataset_fields={row["name"] for row in db.execute("PRAGMA table_info(datasets)").fetchall()}
+        if "owner_user_id" not in dataset_fields:db.execute("ALTER TABLE datasets ADD COLUMN owner_user_id TEXT")
+        db.execute("CREATE INDEX IF NOT EXISTS datasets_owner_created ON datasets(owner_user_id,created_at DESC)")
         db.execute(f"""
         CREATE TABLE IF NOT EXISTS versions (
           dataset_id TEXT NOT NULL REFERENCES datasets(id) ON DELETE CASCADE,
@@ -671,7 +678,7 @@ def save_dataset(config: Config, tables: dict, quality: dict, privacy: dict, fla
     ident=str(uuid.uuid4())
     with connection() as db:
         if user_id:_consume_credits_in_transaction(db,user_id,credit_cost(config.rows),f"Generate {config.rows} rows")
-        db.execute("INSERT INTO datasets(id,name,kind) VALUES(?,?,?)",(ident,config.name,config.kind))
+        db.execute("INSERT INTO datasets(id,name,kind,owner_user_id) VALUES(?,?,?,?)",(ident,config.name,config.kind,user_id))
         db.execute("INSERT INTO versions(dataset_id,version,config_json,tables_json,quality_json,privacy_json,flags_json) VALUES(?,?,?,?,?,?,?)",(ident,1,config.model_dump_json(),json.dumps(tables,separators=(",",":")),json.dumps(quality),json.dumps(privacy),json.dumps(flags or {})))
     return ident,1
 
@@ -680,7 +687,9 @@ def save_version(ident: str, config: Config, tables: dict, quality: dict, privac
     with connection() as db:
         if not getattr(db,"is_postgres",False):db.execute("BEGIN IMMEDIATE")
         lock=" FOR UPDATE" if getattr(db,"is_postgres",False) else ""
-        current=db.execute("SELECT current_version,kind FROM datasets WHERE id=?"+lock,(ident,)).fetchone()
+        owner_filter=" AND owner_user_id=?" if user_id else ""
+        parameters=(ident,user_id) if user_id else (ident,)
+        current=db.execute("SELECT current_version,kind FROM datasets WHERE id=?"+owner_filter+lock,parameters).fetchone()
         if not current:raise ValueError("Dataset not found")
         if current["kind"]!=config.kind:raise ValueError("A dataset version must use the same generation engine")
         if user_id:_consume_credits_in_transaction(db,user_id,credit_cost(config.rows),f"Generate version {current['current_version']+1} with {config.rows} rows")
@@ -690,22 +699,28 @@ def save_version(ident: str, config: Config, tables: dict, quality: dict, privac
     return version
 
 
-def list_versions(ident: str) -> list[dict]:
+def list_versions(ident: str, user_id: str | None = None) -> list[dict]:
     with connection() as db:
-        rows=db.execute("SELECT version,config_json,quality_json,created_at FROM versions WHERE dataset_id=? ORDER BY version DESC",(ident,)).fetchall()
+        owner_filter=" AND d.owner_user_id=?" if user_id else ""
+        parameters=(ident,user_id) if user_id else (ident,)
+        rows=db.execute("SELECT v.version,v.config_json,v.quality_json,v.created_at FROM versions v JOIN datasets d ON d.id=v.dataset_id WHERE v.dataset_id=?"+owner_filter+" ORDER BY v.version DESC",parameters).fetchall()
     return [{"version":r["version"],"config":json.loads(r["config_json"]),"score":json.loads(r["quality_json"])["score"],"created_at":r["created_at"]} for r in rows]
 
 
-def get_dataset(ident: str, version: int | None = None) -> dict | None:
+def get_dataset(ident: str, version: int | None = None, user_id: str | None = None) -> dict | None:
     with connection() as db:
-        row=db.execute("SELECT d.id,d.name,d.kind,d.created_at,d.current_version,v.version,v.config_json,v.tables_json,v.quality_json,v.privacy_json,v.flags_json FROM datasets d JOIN versions v ON d.id=v.dataset_id WHERE d.id=? AND v.version=COALESCE(?,d.current_version)",(ident,version)).fetchone()
+        owner_filter=" AND d.owner_user_id=?" if user_id else ""
+        parameters=(ident,version,user_id) if user_id else (ident,version)
+        row=db.execute("SELECT d.id,d.name,d.kind,d.created_at,d.current_version,v.version,v.config_json,v.tables_json,v.quality_json,v.privacy_json,v.flags_json FROM datasets d JOIN versions v ON d.id=v.dataset_id WHERE d.id=? AND v.version=COALESCE(?,d.current_version)"+owner_filter,parameters).fetchone()
     if not row:return None
     return {"id":row["id"],"name":row["name"],"kind":row["kind"],"created_at":row["created_at"],"version":row["version"],"current_version":row["current_version"],"config":json.loads(row["config_json"]),"tables":json.loads(row["tables_json"]),"quality":json.loads(row["quality_json"]),"privacy":json.loads(row["privacy_json"]),"flags":json.loads(row["flags_json"])}
 
 
-def list_datasets() -> list[dict]:
+def list_datasets(user_id: str | None = None) -> list[dict]:
     with connection() as db:
-        rows=db.execute("SELECT d.id,d.name,d.kind,d.created_at,d.current_version,v.quality_json,v.tables_json FROM datasets d JOIN versions v ON d.id=v.dataset_id AND d.current_version=v.version ORDER BY d.created_at DESC LIMIT 100").fetchall()
+        owner_filter=" WHERE d.owner_user_id=?" if user_id else ""
+        parameters=(user_id,) if user_id else ()
+        rows=db.execute("SELECT d.id,d.name,d.kind,d.created_at,d.current_version,v.quality_json,v.tables_json FROM datasets d JOIN versions v ON d.id=v.dataset_id AND d.current_version=v.version"+owner_filter+" ORDER BY d.created_at DESC LIMIT 100",parameters).fetchall()
     return [{"id":r["id"],"name":r["name"],"kind":r["kind"],"created_at":r["created_at"],"version":r["current_version"],"score":json.loads(r["quality_json"])["score"],"rows":sum(map(len,json.loads(r["tables_json"]).values()))} for r in rows]
 
 

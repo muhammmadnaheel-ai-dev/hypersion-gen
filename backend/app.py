@@ -121,33 +121,33 @@ def regenerate_version(request: Request, ident: str, config: Config):
 
 
 @app.get("/api/datasets/{ident}/versions")
-def versions(ident: str):
-    if not get_dataset(ident):raise HTTPException(404,"Dataset not found")
-    return list_versions(ident)
+def versions(request: Request, ident: str):
+    if not get_dataset(ident,user_id=request.state.user_id):raise HTTPException(404,"Dataset not found")
+    return list_versions(ident,user_id=request.state.user_id)
 
 
 @app.post("/api/datasets/{ident}/explain-validation")
-def validation_explanation(ident: str, version: int | None = None):
-    item=get_dataset(ident,version)
+def validation_explanation(request: Request, ident: str, version: int | None = None):
+    item=get_dataset(ident,version,user_id=request.state.user_id)
     if not item:raise HTTPException(404,"Dataset version not found")
     try:return explain_validation(item["quality"])
     except ValueError as exc:raise HTTPException(503,str(exc))
 
 
 @app.get("/api/datasets")
-def datasets(): return list_datasets()
+def datasets(request: Request): return list_datasets(user_id=request.state.user_id)
 
 
 @app.get("/api/datasets/{ident}")
-def dataset(ident: str, version: int | None = None):
-    item=get_dataset(ident,version)
+def dataset(request: Request, ident: str, version: int | None = None):
+    item=get_dataset(ident,version,user_id=request.state.user_id)
     if not item:raise HTTPException(404,"Dataset not found")
     return {**item,"tables":{k:{"count":len(v),"preview":v[:50],"columns":list(v[0]) if v else []} for k,v in item["tables"].items()}}
 
 
 @app.get("/api/datasets/{ident}/rows")
-def rows(ident: str, table: str, offset: int = Query(0,ge=0), limit: int = Query(50,ge=1,le=200), search: str = "", version: int | None = None):
-    item=get_dataset(ident,version)
+def rows(request: Request, ident: str, table: str, offset: int = Query(0,ge=0), limit: int = Query(50,ge=1,le=200), search: str = "", version: int | None = None):
+    item=get_dataset(ident,version,user_id=request.state.user_id)
     if not item:raise HTTPException(404,"Dataset not found")
     if table not in item["tables"]:raise HTTPException(404,"Table not found")
     indexed=list(enumerate(item["tables"][table]))
@@ -159,16 +159,16 @@ def rows(ident: str, table: str, offset: int = Query(0,ge=0), limit: int = Query
 
 
 @app.get("/api/datasets/{ident}/document/{kind}")
-def document(ident: str, kind: str, version: int | None = None):
-    item=get_dataset(ident,version)
+def document(request: Request, ident: str, kind: str, version: int | None = None):
+    item=get_dataset(ident,version,user_id=request.state.user_id)
     if not item:raise HTTPException(404,"Dataset not found")
     try:return make_document(item,kind)
     except ValueError as exc:raise HTTPException(400,str(exc))
 
 
 @app.get("/api/datasets/{ident}/document/{kind}/export/{fmt}")
-def export_document(ident: str,kind: str,fmt: str,version: int | None = None):
-    item=get_dataset(ident,version)
+def export_document(request: Request, ident: str,kind: str,fmt: str,version: int | None = None):
+    item=get_dataset(ident,version,user_id=request.state.user_id)
     if not item:raise HTTPException(404,"Dataset not found")
     if item["privacy"]["blocked"]:raise HTTPException(403,"Sensitive fields without treatment block export")
     try:body,mime,filename=document_export_bytes(make_document(item,kind),fmt)
@@ -177,8 +177,8 @@ def export_document(ident: str,kind: str,fmt: str,version: int | None = None):
 
 
 @app.get("/api/datasets/{ident}/export/{fmt}")
-def export(ident: str, fmt: str, version: int | None = None):
-    item=get_dataset(ident,version)
+def export(request: Request, ident: str, fmt: str, version: int | None = None):
+    item=get_dataset(ident,version,user_id=request.state.user_id)
     if not item:raise HTTPException(404,"Dataset not found")
     try:body,mime,filename=export_bytes(item,fmt)
     except PermissionError as exc:raise HTTPException(403,str(exc))

@@ -1,13 +1,17 @@
 import io
 import json
+import os
 import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
+os.environ["SUPABASE_DB_URL"]=""
+os.environ["DATABASE_URL"]=""
+
 from app import app as api_app, integrations as integration_status
-from core import Column, Config, InsufficientCreditsError, PostgresConnectionAdapter, analyze_csv, analyze_prompt, connection, credit_cost, document_export_bytes, explain_validation, export_bytes, generate_relational, generate_tabular, get_credit_balance, get_dataset, init_db, list_versions, make_document, privacy_scan, save_dataset, save_version, validate
+from core import Column, Config, InsufficientCreditsError, PostgresConnectionAdapter, analyze_csv, analyze_prompt, connection, credit_cost, document_export_bytes, explain_validation, export_bytes, generate_relational, generate_tabular, get_credit_balance, get_dataset, init_db, list_datasets, list_versions, make_document, privacy_scan, save_dataset, save_version, validate
 from fastapi.testclient import TestClient
 
 
@@ -105,6 +109,26 @@ class GenerationTests(unittest.TestCase):
                 insufficient=client.post("/api/generate",json=config.model_dump(mode="json"),headers=headers)
                 self.assertEqual(insufficient.status_code,402)
                 self.assertEqual(get_credit_balance(user_id),1)
+
+    def test_dataset_access_is_limited_to_its_owner(self):
+        config=Config(name="Private dataset",rows=10)
+        quality={"score":100}
+        tables={"records":[{"record_id":"R-1"}]}
+        with tempfile.TemporaryDirectory() as temp, patch("core.DB_PATH",Path(temp)/"owners.db"), patch.dict("core.os.environ",{"SUPABASE_DB_URL":"","DATABASE_URL":""}):
+            init_db()
+            ident,_=save_dataset(config,tables,quality,{"blocked":False},user_id="user-a")
+            self.assertIsNotNone(get_dataset(ident,user_id="user-a"))
+            self.assertIsNone(get_dataset(ident,user_id="user-b"))
+            self.assertEqual(list_datasets("user-b"),[])
+            self.assertEqual(list_versions(ident,"user-b"),[])
+            with self.assertRaisesRegex(ValueError,"Dataset not found"):
+                save_version(ident,config,tables,quality,{"blocked":False},user_id="user-b")
+            with patch("app.validate_supabase_access_token",return_value="user-b"):
+                client=TestClient(api_app)
+                headers={"Authorization":"Bearer valid-token"}
+                self.assertEqual(client.get("/api/datasets",headers=headers).json(),[])
+                for path in (f"/api/datasets/{ident}",f"/api/datasets/{ident}/versions",f"/api/datasets/{ident}/rows?table=records",f"/api/datasets/{ident}/export/json"):
+                    self.assertEqual(client.get(path,headers=headers).status_code,404)
 
     def test_validation_explanation_endpoint_uses_stored_quality(self):
         stored={"quality":{"score":91,"checks":[{"name":"IDs unique","passed":True}]}}
