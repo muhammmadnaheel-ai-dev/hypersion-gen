@@ -4,6 +4,7 @@ import json
 import os
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
@@ -12,8 +13,10 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
-from core import Config, analyze_csv, analyze_prompt, document_export_bytes, explain_validation, export_bytes, generate_relational, generate_tabular, get_dataset, init_db, list_datasets, list_versions, make_document, privacy_scan, save_dataset, save_version, validate
-from core import CREDITS_PER_THOUSAND_ROWS, FREE_PLAN_CREDITS, InsufficientCreditsError, credit_cost, get_credit_balance
+if __package__:
+    from .core import CREDITS_PER_THOUSAND_ROWS, FREE_PLAN_CREDITS, Config, InsufficientCreditsError, analyze_csv, analyze_prompt, credit_cost, document_export_bytes, explain_validation, export_bytes, generate_relational, generate_tabular, get_credit_balance, get_dataset, init_db, list_datasets, list_versions, make_document, privacy_scan, save_dataset, save_version, validate
+else:
+    from core import CREDITS_PER_THOUSAND_ROWS, FREE_PLAN_CREDITS, Config, InsufficientCreditsError, analyze_csv, analyze_prompt, credit_cost, document_export_bytes, explain_validation, export_bytes, generate_relational, generate_tabular, get_credit_balance, get_dataset, init_db, list_datasets, list_versions, make_document, privacy_scan, save_dataset, save_version, validate
 
 app = FastAPI(title="Hypersion Gen API", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -181,3 +184,7 @@ def export(ident: str, fmt: str, version: int | None = None):
     except PermissionError as exc:raise HTTPException(403,str(exc))
     except ValueError as exc:raise HTTPException(400,str(exc))
     return Response(content=body,media_type=mime,headers={"Content-Disposition":f'attachment; filename="{filename}"'})
+
+
+if os.getenv("VERCEL"):
+    app.frontend("/", directory=Path(__file__).resolve().parent.parent / "dist", fallback="index.html")

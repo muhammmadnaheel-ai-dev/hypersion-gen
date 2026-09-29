@@ -21,7 +21,10 @@ import numpy as np
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from scipy import stats
-from template_library import retrieve_template
+if __package__:
+    from .template_library import retrieve_template
+else:
+    from template_library import retrieve_template
 
 
 ROOT = Path(__file__).resolve().parent
@@ -112,6 +115,8 @@ class Config(BaseModel):
 def connection():
     supabase_url=os.getenv("SUPABASE_DB_URL","").strip()
     database_url=supabase_url or os.getenv("DATABASE_URL","").strip()
+    if os.getenv("VERCEL") and not database_url:
+        raise RuntimeError("Set SUPABASE_DB_URL or DATABASE_URL before deploying to Vercel; serverless SQLite is not persistent.")
     if database_url:
         try:
             import psycopg

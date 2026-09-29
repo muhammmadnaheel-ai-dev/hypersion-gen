@@ -21,6 +21,12 @@ npm run dev
 
 Open http://localhost:5173 (or http://localhost:5174 if the port is already in use). The backend runs at http://localhost:8000 and exposes OpenAPI at `/docs`.
 
+## Deploy to Vercel
+
+Import `muhammmadnaheel-ai-dev/hypersion-gen` into Vercel using the repository root. `vercel.json` builds the Vite frontend, while `pyproject.toml` points Vercel to the FastAPI app. The app mounts the built `dist` frontend and routes API requests through the same deployment.
+
+Before deploying, add these project environment variables for both Preview and Production: `VITE_SUPABASE_URL`, `VITE_SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, and `SUPABASE_DB_URL`. `OPENROUTER_API_KEY` is optional. The frontend `VITE_*` variables are embedded at build time, so redeploy after changing them. The backend refuses to use SQLite on Vercel; configure Supabase/Postgres so credits and generated datasets persist. In Supabase Auth, enable Google and allow the deployed Vercel URL in the redirect URLs. Keep Easypaisa checkout disabled until its verified merchant integration is implemented.
+
 The application works without an AI key using local prompt interpretation. To enable OpenRouter analysis, open `backend/.env` and set `OPENROUTER_API_KEY` to your key. You can choose a model with `OPENROUTER_MODEL`. Restart the backend after editing the file, then check `http://127.0.0.1:8000/api/integrations`; `openrouter.configured` should be `true`. That status endpoint never returns the key. Do not enter the key in the browser or commit `backend/.env` to source control.
 
 For Supabase persistence, install `backend/requirements.txt`, then copy the PostgreSQL connection string from your Supabase project's **Connect** panel into `SUPABASE_DB_URL` in `backend/.env`. Use the Session pooler when your machine cannot reach the direct IPv6 address. Restart the backend; it creates the datasets, versions, and credit ledger tables on startup. The connection uses TLS and works with Supabase's transaction pooler. Check `/api/integrations` or the Admin Panel to confirm the active database. When the variable is unset, local SQLite remains the default. Existing SQLite datasets are not migrated automatically. Keep the connection string on the backend and never commit `backend/.env` or add it to frontend variables.
