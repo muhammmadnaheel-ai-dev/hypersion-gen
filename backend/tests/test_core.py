@@ -11,7 +11,7 @@ os.environ["SUPABASE_DB_URL"]=""
 os.environ["DATABASE_URL"]=""
 
 from app import app as api_app, integrations as integration_status, validate_firebase_access_token
-from firebase_admin import auth as firebase_auth
+from google.auth import exceptions as google_auth_exceptions
 from core import Column, Config, InsufficientCreditsError, PostgresConnectionAdapter, analyze_csv, analyze_prompt, connection, credit_cost, document_export_bytes, explain_validation, export_bytes, generate_relational, generate_tabular, get_credit_balance, get_dataset, init_db, list_datasets, list_versions, make_document, migrate_legacy_firebase_owner, privacy_scan, save_dataset, save_version, validate
 from fastapi.testclient import TestClient
 
@@ -71,18 +71,23 @@ class GenerationTests(unittest.TestCase):
 
     def test_firebase_token_migrates_only_verified_email(self):
         claims={"uid":"firebase-user","email":"verified@example.test","email_verified":True}
-        with patch("app._firebase_admin_app",return_value=object()), patch("app.firebase_auth.verify_id_token",return_value=claims), patch("app.migrate_legacy_firebase_owner") as migrate:
+        with patch("app.id_token.verify_firebase_token",return_value=claims), patch("app.migrate_legacy_firebase_owner") as migrate:
             self.assertEqual(validate_firebase_access_token("valid-token"),"firebase-user")
         migrate.assert_called_once_with("firebase-user","verified@example.test")
 
         claims["email_verified"]=False
-        with patch("app._firebase_admin_app",return_value=object()), patch("app.firebase_auth.verify_id_token",return_value=claims), patch("app.migrate_legacy_firebase_owner") as migrate:
+        with patch("app.id_token.verify_firebase_token",return_value=claims), patch("app.migrate_legacy_firebase_owner") as migrate:
             self.assertEqual(validate_firebase_access_token("valid-token"),"firebase-user")
         migrate.assert_not_called()
 
     def test_firebase_token_rejects_invalid_id_token(self):
-        with patch("app._firebase_admin_app",return_value=object()), patch("app.firebase_auth.verify_id_token",side_effect=firebase_auth.InvalidIdTokenError("Invalid token")):
+        with patch("app.id_token.verify_firebase_token",side_effect=ValueError("Invalid token")):
             self.assertIsNone(validate_firebase_access_token("invalid-token"))
+
+    def test_firebase_token_verifier_outage_returns_service_unavailable(self):
+        with patch("app.id_token.verify_firebase_token",side_effect=google_auth_exceptions.TransportError("network unavailable")):
+            with self.assertRaisesRegex(Exception,"Firebase authentication could not validate the session"):
+                validate_firebase_access_token("valid-token")
 
     def test_postgres_adapter_maps_placeholders_and_write_lock(self):
         class RecordingConnection:

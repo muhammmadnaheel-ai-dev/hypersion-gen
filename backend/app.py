@@ -5,9 +5,9 @@ import os
 from pathlib import Path
 from typing import Any
 
-import firebase_admin
-from firebase_admin import auth as firebase_auth
-from firebase_admin import credentials
+from google.auth import exceptions as google_auth_exceptions
+from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.oauth2 import id_token
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -25,33 +25,13 @@ init_db()
 credit_plans=[{"id":"starter","name":"Starter","price_pkr":500,"credits":500},{"id":"pro","name":"Pro","price_pkr":1500,"credits":2000},{"id":"premium","name":"Premium","price_pkr":3000,"credits":5000}]
 
 
-def _firebase_admin_app():
-    app_name="hypersion-api"
-    try:
-        return firebase_admin.get_app(app_name)
-    except ValueError:
-        pass
-    service_account_json=os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
-    if not service_account_json:
-        raise HTTPException(503, "Firebase authentication is not configured on the server")
-    try:
-        service_account=json.loads(service_account_json)
-        credential=credentials.Certificate(service_account)
-        project_id=service_account["project_id"]
-    except (ValueError, KeyError, TypeError) as exc:
-        raise HTTPException(503, "Firebase authentication credentials are misconfigured") from exc
-    try:
-        return firebase_admin.initialize_app(credential, {"projectId":project_id}, name=app_name)
-    except ValueError:
-        return firebase_admin.get_app(app_name)
-
-
 def validate_firebase_access_token(access_token: str) -> str | None:
+    project_id=os.getenv("FIREBASE_PROJECT_ID", "hypersion-50897").strip() or "hypersion-50897"
     try:
-        claims=firebase_auth.verify_id_token(access_token, app=_firebase_admin_app())
-    except firebase_auth.InvalidIdTokenError:
+        claims=id_token.verify_firebase_token(access_token, GoogleAuthRequest(), audience=project_id)
+    except ValueError:
         return None
-    except firebase_admin.exceptions.FirebaseError as exc:
+    except google_auth_exceptions.GoogleAuthError as exc:
         raise HTTPException(503, "Firebase authentication could not validate the session") from exc
     user_id=claims.get("uid")
     email=claims.get("email")
