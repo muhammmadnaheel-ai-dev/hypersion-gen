@@ -66,7 +66,9 @@ class GenerationTests(unittest.TestCase):
     def test_api_rejects_missing_or_invalid_access_tokens(self):
         client=TestClient(api_app)
         self.assertEqual(client.get("/api/health").status_code,200)
-        self.assertEqual(client.get("/api/datasets").status_code,401)
+        missing_token=client.get("/api/datasets")
+        self.assertEqual(missing_token.status_code,401)
+        self.assertEqual(missing_token.json()["detail"],"Sign in to access this API")
         with patch("app.validate_supabase_access_token",return_value=False):
             response=client.get("/api/datasets",headers={"Authorization":"Bearer expired-token"})
         self.assertEqual(response.status_code,401)

@@ -50,7 +50,7 @@ async def require_authenticated_user(request: Request, call_next):
         return await call_next(request)
     scheme, _, access_token=request.headers.get("authorization", "").partition(" ")
     if scheme.lower() != "bearer" or not access_token.strip():
-        return JSONResponse(status_code=401, content={"detail":"Sign in with Google to access this API"})
+        return JSONResponse(status_code=401, content={"detail":"Sign in to access this API"})
     try:
         user_id=await run_in_threadpool(validate_supabase_access_token, access_token.strip())
     except HTTPException as exc:

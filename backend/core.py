@@ -30,7 +30,6 @@ else:
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env", override=False)
 DB_PATH = Path(os.getenv("DATABASE_PATH", str(ROOT / "data" / "hypersion.db")))
-DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 FREE_PLAN_CREDITS = 100
 CREDITS_PER_THOUSAND_ROWS = 1
 
@@ -136,6 +135,7 @@ def connection():
         finally:
             db.close()
         return
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(DB_PATH)
     db.row_factory = sqlite3.Row
     db.execute("PRAGMA foreign_keys = ON")
