@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react'
+import { useState, type FormEvent } from 'react'
 import { supabase } from './lib/supabase'
 
 function authMessage(cause: unknown): string {
@@ -9,6 +9,9 @@ function authMessage(cause: unknown): string {
   }
   if (error?.code === 'over_request_rate_limit' || error?.status === 429) {
     return 'Too many sign-in attempts. Please wait a few minutes before trying again.'
+  }
+  if (/unsupported provider|provider.{0,30}(disabled|not enabled)/i.test(error?.message || '')) {
+    return 'Google sign-in is not enabled in Supabase. Configure Google under Authentication > Providers.'
   }
   return cause instanceof Error ? cause.message : 'Authentication failed. Please try again.'
 }
@@ -29,19 +32,6 @@ export default function AuthScreen({ loading, recovering, onRecoveryComplete }: 
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [googleAvailable, setGoogleAvailable] = useState<boolean | null>(null)
-
-  useEffect(() => {
-    const url = import.meta.env.VITE_SUPABASE_URL
-    const key = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY
-    if (!url || !key) return
-    let active = true
-    fetch(`${url.replace(/\/$/, '')}/auth/v1/settings`, { headers: { apikey: key } })
-      .then(response => response.ok ? response.json() : null)
-      .then(settings => { if (active) setGoogleAvailable(settings?.external?.google === true) })
-      .catch(() => { if (active) setGoogleAvailable(false) })
-    return () => { active = false }
-  }, [])
 
   function switchMode(next: AuthMode) {
     setMode(next)
@@ -93,7 +83,7 @@ export default function AuthScreen({ loading, recovering, onRecoveryComplete }: 
   }
 
   async function signInWithGoogle() {
-    if (!supabase || !googleAvailable) return
+    if (!supabase) return
     setBusy(true)
     setError('')
     setNotice('')
@@ -117,8 +107,7 @@ export default function AuthScreen({ loading, recovering, onRecoveryComplete }: 
     <div className="brand"><div className="brand-mark"><span/><span/><span/><span/></div><div><strong>HYPERSION</strong><small>GEN PLATFORM</small></div></div>
     <div className="auth-copy"><span>HYPERSION WORKSPACE</span><h1 id="auth-title">{title}</h1><p>{description}</p></div>
     {!recovering && mode === 'signIn' && <>
-      <button className="auth-google" type="button" disabled={disabled || googleAvailable !== true} onClick={() => void signInWithGoogle()}><span className="google-mark" aria-hidden="true">G</span>Continue with Google</button>
-      {googleAvailable === false && <p className="auth-provider-note">Google sign-in is awaiting setup. Use email below.</p>}
+      <button className="auth-google" type="button" disabled={disabled} onClick={() => void signInWithGoogle()}><span className="google-mark" aria-hidden="true">G</span>Continue with Google</button>
       <div className="auth-divider"><span>or</span></div>
     </>}
     <form onSubmit={event => void submitEmail(event)}>
