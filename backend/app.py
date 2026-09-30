@@ -33,7 +33,7 @@ def validate_firebase_access_token(access_token: str) -> str | None:
         return None
     except google_auth_exceptions.GoogleAuthError as exc:
         raise HTTPException(503, "Firebase authentication could not validate the session") from exc
-    user_id=claims.get("uid")
+    user_id=claims.get("sub")
     email=claims.get("email")
     if not isinstance(user_id, str) or not user_id:
         return None

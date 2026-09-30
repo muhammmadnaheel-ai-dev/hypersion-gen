@@ -70,7 +70,7 @@ class GenerationTests(unittest.TestCase):
         self.assertEqual(db.execute.call_args_list[-1].args[1],("firebase-user","person@example.test"))
 
     def test_firebase_token_migrates_only_verified_email(self):
-        claims={"uid":"firebase-user","email":"verified@example.test","email_verified":True}
+        claims={"sub":"firebase-user","email":"verified@example.test","email_verified":True}
         with patch("app.id_token.verify_firebase_token",return_value=claims), patch("app.migrate_legacy_firebase_owner") as migrate:
             self.assertEqual(validate_firebase_access_token("valid-token"),"firebase-user")
         migrate.assert_called_once_with("firebase-user","verified@example.test")
