@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { onAuthStateChanged, signOut as firebaseSignOut, type User } from 'firebase/auth'
+import { onAuthStateChanged, signInAnonymously, type User } from 'firebase/auth'
 import { Activity, ArrowDownToLine, ArrowLeft, ArrowRight, BarChart3, Bell, BookOpen, Check, CheckCircle2, ChevronDown, CircleHelp, Code2, Columns3, Copy, CreditCard, Database, Download, FileArchive, FileJson, FileSpreadsheet, FileText, Files, Filter, FlaskConical, GitBranch, KeyRound, LayoutDashboard, LockKeyhole, Menu, MoreHorizontal, PanelLeftClose, Play, Plus, RefreshCw, Search, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Table2, UploadCloud, WandSparkles, X } from 'lucide-react'
-import AuthScreen from './AuthScreen'
 import { firebaseAuth } from './lib/firebase'
 
 type Column = {name:string;type:string;key:string;pii:boolean;privacy:string;distribution:string;nullable:boolean}
@@ -90,8 +89,6 @@ export default function App(){
   const [progress,setProgress]=useState(0)
   const [toast,setToast]=useState('')
   const [authUser,setAuthUser]=useState<User|null>(null)
-  const [authLoading,setAuthLoading]=useState(true)
-  const [passwordRecovery,setPasswordRecovery]=useState(()=>new URLSearchParams(window.location.search).get('mode')==='resetPassword')
   const [theme,setTheme]=useState<'dark'|'light'>('dark')
   const [sidebarOpen,setSidebarOpen]=useState(false)
   const [activeTable,setActiveTable]=useState('')
@@ -114,9 +111,8 @@ export default function App(){
   const [databaseStatus,setDatabaseStatus]=useState<{configured:boolean;provider:string}|null>(null)
   const fileRef=useRef<HTMLInputElement>(null)
 
-  useEffect(()=>{if(!firebaseAuth){setAuthLoading(false);return}return onAuthStateChanged(firebaseAuth,user=>{setAuthUser(user);setAuthLoading(false)})},[])
   const notify=(message:string)=>{setToast(message);window.setTimeout(()=>setToast(''),4500)}
-  async function signOut(){if(!firebaseAuth)return;try{await firebaseSignOut(firebaseAuth)}catch(error){notify((error as Error).message)}}
+  useEffect(()=>{if(!firebaseAuth){notify('Firebase Authentication is not configured.');return}return onAuthStateChanged(firebaseAuth,user=>{if(user){setAuthUser(user);return}signInAnonymously(firebaseAuth).catch(error=>notify((error as Error).message))})},[])
   const go=(next:Screen)=>{if(next==='Create Dataset')setVersionTarget(null);setScreen(next);setSidebarOpen(false);window.scrollTo(0,0)}
   const refresh=()=>request<DatasetSummary[]>('/datasets').then(setDatasets).catch(()=>{})
   const refreshBilling=()=>request<Billing>('/billing').then(setBilling).catch(()=>{})
@@ -140,7 +136,6 @@ export default function App(){
   function setColumn(index:number,patch:Partial<Column>){setConfig(prev=>({...prev,columns:prev.columns.map((c,i)=>i===index?{...c,...patch}:c)}))}
   const navActive=(label:Screen)=>label===screen||(label==='Create Dataset'&&['Schema Analysis','Configure Dataset','Generation'].includes(screen))||(label==='Datasets'&&['Dataset Preview','Relationships','Documents'].includes(screen))||(label==='DataLens'&&screen==='DataLens')||(label==='Export Center'&&screen==='Export Center')
   const resultReady=!!result
-  if(!authUser||passwordRecovery)return <AuthScreen loading={authLoading} recovering={passwordRecovery} onRecoveryComplete={()=>setPasswordRecovery(false)}/>
   return <div className={`app ${theme}`}>
     <aside className={'sidebar '+(sidebarOpen?'open':'')}>
       <div className="sidebar-head"><Brand/><button className="icon-button sidebar-collapse" onClick={()=>setSidebarOpen(false)} aria-label="Close menu"><PanelLeftClose size={17}/></button></div>
@@ -150,7 +145,7 @@ export default function App(){
     </aside>
     {sidebarOpen&&<div className="mobile-scrim" onClick={()=>setSidebarOpen(false)}/>}
     <div className="main-shell">
-      <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" onClick={()=>setSidebarOpen(true)} aria-label="Open menu"><Menu size={20}/></button><span>Workspace</span><span className="crumb-divider">/</span><strong>{screen}</strong></div><div className="topbar-right"><span className="system-status"><span/> All systems operational</span><span className="topbar-divider"/><button className="icon-button" onClick={()=>go('Help')} aria-label="Help"><CircleHelp size={18}/></button><button className="icon-button" onClick={()=>notify('You are all caught up')} aria-label="Notifications"><Bell size={18}/></button><button className="button secondary auth-sign-out" onClick={signOut}>Sign out</button></div></header>
+      <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" onClick={()=>setSidebarOpen(true)} aria-label="Open menu"><Menu size={20}/></button><span>Workspace</span><span className="crumb-divider">/</span><strong>{screen}</strong></div><div className="topbar-right"><span className="system-status"><span/> All systems operational</span><span className="topbar-divider"/><button className="icon-button" onClick={()=>go('Help')} aria-label="Help"><CircleHelp size={18}/></button><button className="icon-button" onClick={()=>notify('You are all caught up')} aria-label="Notifications"><Bell size={18}/></button></div></header>
       <main className="content">
         {screen==='DataLens'&&result&&<ValidationExplanation datasetId={result.id} version={result.version}/>}
         {screen==='Admin Panel'&&<>
