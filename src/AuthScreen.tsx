@@ -1,6 +1,18 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { supabase } from './lib/supabase'
 
+function authMessage(cause: unknown): string {
+  const error = cause as { code?: string; status?: number; message?: string } | null
+  if (error?.code === 'over_email_send_rate_limit' ||
+      (error?.status === 429 && /email|sending/i.test(error.message || ''))) {
+    return 'Supabase has reached its email sending limit. If your account is already confirmed, sign in with your password. Otherwise, wait before requesting another email.'
+  }
+  if (error?.code === 'over_request_rate_limit' || error?.status === 429) {
+    return 'Too many sign-in attempts. Please wait a few minutes before trying again.'
+  }
+  return cause instanceof Error ? cause.message : 'Authentication failed. Please try again.'
+}
+
 type AuthMode = 'signIn' | 'signUp' | 'reset' | 'link'
 
 type Props = {
@@ -74,7 +86,7 @@ export default function AuthScreen({ loading, recovering, onRecoveryComplete }: 
         setNotice('Check your email for a sign-in link.')
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Authentication failed. Please try again.')
+      setError(authMessage(cause))
     } finally {
       setBusy(false)
     }
@@ -91,7 +103,7 @@ export default function AuthScreen({ loading, recovering, onRecoveryComplete }: 
       })
       if (authError) throw authError
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Google sign-in failed. Please try again.')
+      setError(authMessage(cause))
       setBusy(false)
     }
   }
