@@ -188,18 +188,50 @@ def init_db():
         """)
         db.execute(f"CREATE TABLE IF NOT EXISTS credit_accounts (user_id TEXT PRIMARY KEY, balance INTEGER NOT NULL, created_at {created_at_type} NOT NULL DEFAULT CURRENT_TIMESTAMP)")
         db.execute(f"CREATE TABLE IF NOT EXISTS credit_ledger (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES credit_accounts(user_id), amount INTEGER NOT NULL, description TEXT NOT NULL, created_at {created_at_type} NOT NULL DEFAULT CURRENT_TIMESTAMP)")
+        db.execute(f"CREATE TABLE IF NOT EXISTS firebase_identity_migrations (firebase_uid TEXT PRIMARY KEY, email TEXT NOT NULL, completed_at {created_at_type} NOT NULL DEFAULT CURRENT_TIMESTAMP)")
         if os.getenv("SUPABASE_DB_URL","").strip():
             db.execute("ALTER TABLE datasets ENABLE ROW LEVEL SECURITY")
             db.execute("ALTER TABLE versions ENABLE ROW LEVEL SECURITY")
             db.execute("ALTER TABLE credit_accounts ENABLE ROW LEVEL SECURITY")
             db.execute("ALTER TABLE credit_ledger ENABLE ROW LEVEL SECURITY")
-            db.execute("REVOKE ALL ON TABLE datasets, versions, credit_accounts, credit_ledger FROM anon, authenticated")
+            db.execute("ALTER TABLE firebase_identity_migrations ENABLE ROW LEVEL SECURITY")
+            db.execute("REVOKE ALL ON TABLE datasets, versions, credit_accounts, credit_ledger, firebase_identity_migrations FROM anon, authenticated")
         db.execute("CREATE INDEX IF NOT EXISTS versions_created ON versions(created_at DESC)")
         if getattr(db,"is_postgres",False):
             fields={row["column_name"] for row in db.execute("SELECT column_name FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='versions'").fetchall()}
         else:
             fields={row["name"] for row in db.execute("PRAGMA table_info(versions)").fetchall()}
         if "flags_json" not in fields:db.execute("ALTER TABLE versions ADD COLUMN flags_json TEXT NOT NULL DEFAULT '{}'")
+
+
+def migrate_legacy_firebase_owner(firebase_uid: str, email: str) -> None:
+    normalized_email=email.strip().lower()
+    if not normalized_email or not os.getenv("SUPABASE_DB_URL", "").strip():
+        return
+    with connection() as db:
+        if not getattr(db, "is_postgres", False):
+            return
+        legacy_users=db.execute(
+            "SELECT id FROM auth.users WHERE lower(email)=? AND email_confirmed_at IS NOT NULL ORDER BY created_at LIMIT 2 FOR UPDATE",
+            (normalized_email,),
+        ).fetchall()
+        migration=db.execute("SELECT 1 FROM firebase_identity_migrations WHERE firebase_uid=?", (firebase_uid,)).fetchone()
+        if migration:
+            return
+        if len(legacy_users)==1:
+            legacy_user_id=str(legacy_users[0]["id"])
+            if legacy_user_id!=firebase_uid:
+                db.execute("UPDATE datasets SET owner_user_id=? WHERE owner_user_id=?", (firebase_uid, legacy_user_id))
+                db.execute(
+                    "INSERT INTO credit_accounts(user_id,balance,created_at) SELECT ?,balance,created_at FROM credit_accounts WHERE user_id=? ON CONFLICT(user_id) DO UPDATE SET balance=credit_accounts.balance+EXCLUDED.balance",
+                    (firebase_uid, legacy_user_id),
+                )
+                db.execute("UPDATE credit_ledger SET user_id=? WHERE user_id=?", (firebase_uid, legacy_user_id))
+                db.execute("DELETE FROM credit_accounts WHERE user_id=?", (legacy_user_id,))
+        db.execute(
+            "INSERT INTO firebase_identity_migrations(firebase_uid,email) VALUES(?,?) ON CONFLICT(firebase_uid) DO NOTHING",
+            (firebase_uid, normalized_email),
+        )
 
 
 def credit_cost(row_count: int) -> int:

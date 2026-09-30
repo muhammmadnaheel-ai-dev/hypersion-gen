@@ -5,13 +5,14 @@ import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 os.environ["SUPABASE_DB_URL"]=""
 os.environ["DATABASE_URL"]=""
 
-from app import app as api_app, integrations as integration_status
-from core import Column, Config, InsufficientCreditsError, PostgresConnectionAdapter, analyze_csv, analyze_prompt, connection, credit_cost, document_export_bytes, explain_validation, export_bytes, generate_relational, generate_tabular, get_credit_balance, get_dataset, init_db, list_datasets, list_versions, make_document, privacy_scan, save_dataset, save_version, validate
+from app import app as api_app, integrations as integration_status, validate_firebase_access_token
+from firebase_admin import auth as firebase_auth
+from core import Column, Config, InsufficientCreditsError, PostgresConnectionAdapter, analyze_csv, analyze_prompt, connection, credit_cost, document_export_bytes, explain_validation, export_bytes, generate_relational, generate_tabular, get_credit_balance, get_dataset, init_db, list_datasets, list_versions, make_document, migrate_legacy_firebase_owner, privacy_scan, save_dataset, save_version, validate
 from fastapi.testclient import TestClient
 
 
@@ -40,7 +41,48 @@ class GenerationTests(unittest.TestCase):
         statements=[call.args[0] for call in execute.call_args_list]
         self.assertIn("ALTER TABLE datasets ENABLE ROW LEVEL SECURITY",statements)
         self.assertIn("ALTER TABLE versions ENABLE ROW LEVEL SECURITY",statements)
-        self.assertIn("REVOKE ALL ON TABLE datasets, versions, credit_accounts, credit_ledger FROM anon, authenticated",statements)
+        self.assertIn("REVOKE ALL ON TABLE datasets, versions, credit_accounts, credit_ledger, firebase_identity_migrations FROM anon, authenticated",statements)
+
+    def test_firebase_identity_migration_table_is_created(self):
+        with tempfile.TemporaryDirectory() as temp, patch("core.DB_PATH",Path(temp)/"migration.db"), patch.dict("core.os.environ",{"SUPABASE_DB_URL":"","DATABASE_URL":""}):
+            init_db()
+            with connection() as db:
+                table=db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='firebase_identity_migrations'").fetchone()
+        self.assertIsNotNone(table)
+
+    def test_legacy_owner_migration_transfers_datasets_and_credits_atomically(self):
+        db=Mock(is_postgres=True)
+        auth_users=Mock()
+        auth_users.fetchall.return_value=[{"id":"legacy-user"}]
+        migration=Mock()
+        migration.fetchone.return_value=None
+        db.execute.side_effect=[auth_users,migration,Mock(),Mock(),Mock(),Mock(),Mock()]
+        with patch("core.connection") as connect_db, patch.dict("core.os.environ",{"SUPABASE_DB_URL":"postgresql://example.test/db"}):
+            connect_db.return_value.__enter__.return_value=db
+            migrate_legacy_firebase_owner("firebase-user","  Person@Example.Test  ")
+
+        statements=[call.args[0] for call in db.execute.call_args_list]
+        self.assertIn("UPDATE datasets SET owner_user_id=? WHERE owner_user_id=?",statements)
+        self.assertIn("UPDATE credit_ledger SET user_id=? WHERE user_id=?",statements)
+        self.assertIn("DELETE FROM credit_accounts WHERE user_id=?",statements)
+        self.assertIn("EXCLUDED.balance",statements[3])
+        self.assertEqual(db.execute.call_args_list[0].args[1],("person@example.test",))
+        self.assertEqual(db.execute.call_args_list[-1].args[1],("firebase-user","person@example.test"))
+
+    def test_firebase_token_migrates_only_verified_email(self):
+        claims={"uid":"firebase-user","email":"verified@example.test","email_verified":True}
+        with patch("app._firebase_admin_app",return_value=object()), patch("app.firebase_auth.verify_id_token",return_value=claims), patch("app.migrate_legacy_firebase_owner") as migrate:
+            self.assertEqual(validate_firebase_access_token("valid-token"),"firebase-user")
+        migrate.assert_called_once_with("firebase-user","verified@example.test")
+
+        claims["email_verified"]=False
+        with patch("app._firebase_admin_app",return_value=object()), patch("app.firebase_auth.verify_id_token",return_value=claims), patch("app.migrate_legacy_firebase_owner") as migrate:
+            self.assertEqual(validate_firebase_access_token("valid-token"),"firebase-user")
+        migrate.assert_not_called()
+
+    def test_firebase_token_rejects_invalid_id_token(self):
+        with patch("app._firebase_admin_app",return_value=object()), patch("app.firebase_auth.verify_id_token",side_effect=firebase_auth.InvalidIdTokenError("Invalid token")):
+            self.assertIsNone(validate_firebase_access_token("invalid-token"))
 
     def test_postgres_adapter_maps_placeholders_and_write_lock(self):
         class RecordingConnection:
@@ -69,7 +111,7 @@ class GenerationTests(unittest.TestCase):
         missing_token=client.get("/api/datasets")
         self.assertEqual(missing_token.status_code,401)
         self.assertEqual(missing_token.json()["detail"],"Sign in to access this API")
-        with patch("app.validate_supabase_access_token",return_value=False):
+        with patch("app.validate_firebase_access_token",return_value=False):
             response=client.get("/api/datasets",headers={"Authorization":"Bearer expired-token"})
         self.assertEqual(response.status_code,401)
 
@@ -94,7 +136,7 @@ class GenerationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp, patch("core.DB_PATH",Path(temp)/"billing-api.db"), patch.dict("core.os.environ",{"SUPABASE_DB_URL":"","DATABASE_URL":""}):
             init_db()
             client=TestClient(api_app)
-            with patch("app.validate_supabase_access_token",return_value=user_id):
+            with patch("app.validate_firebase_access_token",return_value=user_id):
                 billing=client.get("/api/billing",headers=headers)
                 self.assertEqual(billing.status_code,200)
                 self.assertEqual(billing.json()["balance"],100)
@@ -125,7 +167,7 @@ class GenerationTests(unittest.TestCase):
             self.assertEqual(list_versions(ident,"user-b"),[])
             with self.assertRaisesRegex(ValueError,"Dataset not found"):
                 save_version(ident,config,tables,quality,{"blocked":False},user_id="user-b")
-            with patch("app.validate_supabase_access_token",return_value="user-b"):
+            with patch("app.validate_firebase_access_token",return_value="user-b"):
                 client=TestClient(api_app)
                 headers={"Authorization":"Bearer valid-token"}
                 self.assertEqual(client.get("/api/datasets",headers=headers).json(),[])
@@ -135,7 +177,7 @@ class GenerationTests(unittest.TestCase):
     def test_validation_explanation_endpoint_uses_stored_quality(self):
         stored={"quality":{"score":91,"checks":[{"name":"IDs unique","passed":True}]}}
         answer={"summary":"The measured checks pass.","priorities":[],"model":"test/model"}
-        with patch("app.validate_supabase_access_token",return_value=True), patch("app.get_dataset",return_value=stored), patch("app.explain_validation",return_value=answer) as explain:
+        with patch("app.validate_firebase_access_token",return_value=True), patch("app.get_dataset",return_value=stored), patch("app.explain_validation",return_value=answer) as explain:
             response=TestClient(api_app).post("/api/datasets/dataset-id/explain-validation?version=2",headers={"Authorization":"Bearer valid-token"})
         self.assertEqual(response.status_code,200)
         self.assertEqual(response.json(),answer)

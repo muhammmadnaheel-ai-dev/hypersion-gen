@@ -1,17 +1,24 @@
-import { useState, type FormEvent } from 'react'
-import { supabase } from './lib/supabase'
+import { useEffect, useState, type FormEvent } from 'react'
+import {
+  confirmPasswordReset,
+  createUserWithEmailAndPassword,
+  GoogleAuthProvider,
+  isSignInWithEmailLink,
+  sendPasswordResetEmail,
+  sendSignInLinkToEmail,
+  signInWithEmailAndPassword,
+  signInWithEmailLink,
+  signInWithPopup,
+} from 'firebase/auth'
+import { firebaseAuth } from './lib/firebase'
 
 function authMessage(cause: unknown): string {
   const error = cause as { code?: string; status?: number; message?: string } | null
-  if (error?.code === 'over_email_send_rate_limit' ||
-      (error?.status === 429 && /email|sending/i.test(error.message || ''))) {
-    return 'Supabase has reached its email sending limit. If your account is already confirmed, sign in with your password. Otherwise, wait before requesting another email.'
-  }
-  if (error?.code === 'over_request_rate_limit' || error?.status === 429) {
+  if (error?.code === 'auth/too-many-requests' || error?.status === 429) {
     return 'Too many sign-in attempts. Please wait a few minutes before trying again.'
   }
-  if (/unsupported provider|provider.{0,30}(disabled|not enabled)/i.test(error?.message || '')) {
-    return 'Google sign-in is not enabled in Supabase. Configure Google under Authentication > Providers.'
+  if (error?.code === 'auth/operation-not-allowed') {
+    return 'This sign-in method is not enabled in Firebase Authentication.'
   }
   return cause instanceof Error ? cause.message : 'Authentication failed. Please try again.'
 }
@@ -33,6 +40,19 @@ export default function AuthScreen({ loading, recovering, onRecoveryComplete }: 
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
+  useEffect(() => {
+    if (!firebaseAuth || !isSignInWithEmailLink(firebaseAuth, window.location.href)) return
+    const savedEmail = window.localStorage.getItem('firebaseSignInEmail')
+    if (!savedEmail) {
+      setMode('link')
+      setNotice('Enter the email address where we sent your sign-in link.')
+      return
+    }
+    signInWithEmailLink(firebaseAuth, savedEmail, window.location.href)
+      .then(() => window.localStorage.removeItem('firebaseSignInEmail'))
+      .catch(cause => setError(authMessage(cause)))
+  }, [])
+
   function switchMode(next: AuthMode) {
     setMode(next)
     setPassword('')
@@ -43,7 +63,7 @@ export default function AuthScreen({ loading, recovering, onRecoveryComplete }: 
 
   async function submitEmail(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!supabase) return
+    if (!firebaseAuth) return
     if ((mode === 'signUp' || recovering) && password !== confirmPassword) {
       setError('Passwords do not match.')
       return
@@ -53,27 +73,31 @@ export default function AuthScreen({ loading, recovering, onRecoveryComplete }: 
     setNotice('')
     try {
       if (recovering) {
-        const { error: authError } = await supabase.auth.updateUser({ password })
-        if (authError) throw authError
+        const code = new URLSearchParams(window.location.search).get('oobCode')
+        if (!code) throw new Error('This password reset link is invalid or has expired.')
+        await confirmPasswordReset(firebaseAuth, code, password)
+        window.history.replaceState({}, '', window.location.pathname)
         onRecoveryComplete()
       } else if (mode === 'signIn') {
-        const { error: authError } = await supabase.auth.signInWithPassword({ email: email.trim(), password })
-        if (authError) throw authError
+        await signInWithEmailAndPassword(firebaseAuth, email.trim(), password)
       } else if (mode === 'signUp') {
-        const { data, error: authError } = await supabase.auth.signUp({
-          email: email.trim(), password,
-          options: { emailRedirectTo: window.location.origin },
-        })
-        if (authError) throw authError
-        if (!data.session) setNotice('Check your email to confirm your account, then sign in.')
+        await createUserWithEmailAndPassword(firebaseAuth, email.trim(), password)
       } else if (mode === 'reset') {
-        const { error: authError } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin })
-        if (authError) throw authError
+        await sendPasswordResetEmail(firebaseAuth, email.trim())
         setNotice('If this account exists, a password reset link is on its way.')
       } else {
-        const { error: authError } = await supabase.auth.signInWithOtp({ email: email.trim(), options: { emailRedirectTo: window.location.origin } })
-        if (authError) throw authError
-        setNotice('Check your email for a sign-in link.')
+        if (isSignInWithEmailLink(firebaseAuth, window.location.href)) {
+          const savedEmail = window.localStorage.getItem('firebaseSignInEmail') || email.trim()
+          await signInWithEmailLink(firebaseAuth, savedEmail, window.location.href)
+          window.localStorage.removeItem('firebaseSignInEmail')
+        } else {
+          await sendSignInLinkToEmail(firebaseAuth, email.trim(), {
+            url: window.location.origin,
+            handleCodeInApp: true,
+          })
+          window.localStorage.setItem('firebaseSignInEmail', email.trim())
+          setNotice('Check your email for a sign-in link.')
+        }
       }
     } catch (cause) {
       setError(authMessage(cause))
@@ -83,22 +107,19 @@ export default function AuthScreen({ loading, recovering, onRecoveryComplete }: 
   }
 
   async function signInWithGoogle() {
-    if (!supabase) return
+    if (!firebaseAuth) return
     setBusy(true)
     setError('')
     setNotice('')
     try {
-      const { error: authError } = await supabase.auth.signInWithOAuth({
-        provider: 'google', options: { redirectTo: window.location.origin },
-      })
-      if (authError) throw authError
+      await signInWithPopup(firebaseAuth, new GoogleAuthProvider())
     } catch (cause) {
       setError(authMessage(cause))
       setBusy(false)
     }
   }
 
-  const disabled = !supabase || loading || busy
+  const disabled = !firebaseAuth || loading || busy
   const title = recovering ? 'Choose a new password' : mode === 'signUp' ? 'Create your account' : mode === 'reset' ? 'Reset your password' : 'Sign in to continue'
   const description = recovering ? 'Enter a new password for your account.' : mode === 'signUp' ? 'Create an account to save your own datasets.' : mode === 'reset' ? 'We’ll email you a link to reset your password.' : mode === 'link' ? 'We’ll email you a secure sign-in link.' : 'Choose Google or use your email and password.'
   const submitLabel = recovering ? 'Save new password' : mode === 'signUp' ? 'Create account' : mode === 'reset' ? 'Send reset link' : mode === 'link' ? 'Email me a sign-in link' : 'Sign in with email'
@@ -119,9 +140,9 @@ export default function AuthScreen({ loading, recovering, onRecoveryComplete }: 
     {!recovering && <div className="auth-actions">
       {mode === 'signIn' ? <><button type="button" onClick={() => switchMode('reset')}>Forgot password?</button><button type="button" onClick={() => switchMode('signUp')}>Create account</button><button type="button" onClick={() => switchMode('link')}>Use an email link instead</button></> : <button type="button" onClick={() => switchMode('signIn')}>Back to sign in</button>}
     </div>}
-    {!supabase && <p className="auth-message" role="alert">Supabase is not configured for this app.</p>}
+    {!firebaseAuth && <p className="auth-message" role="alert">Firebase Authentication is not configured for this app.</p>}
     {error && <p className="auth-message" role="alert">{error}</p>}
     {notice && <p className="auth-message success" role="status">{notice}</p>}
-    <p className="auth-foot">Protected by Supabase authentication</p>
+    <p className="auth-foot">Protected by Firebase Authentication</p>
   </section></main>
 }

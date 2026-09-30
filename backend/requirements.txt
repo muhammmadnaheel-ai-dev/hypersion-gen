@@ -8,3 +8,4 @@ reportlab>=4,<5
 httpx>=0.27,<1
 python-dotenv>=1,<2
 psycopg[binary]>=3.2,<4
+firebase-admin>=7,<8

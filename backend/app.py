@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 
+import firebase_admin
+from firebase_admin import auth as firebase_auth
+from firebase_admin import credentials
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
@@ -14,9 +15,9 @@ from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
 if __package__:
-    from .core import CREDITS_PER_THOUSAND_ROWS, FREE_PLAN_CREDITS, Config, InsufficientCreditsError, analyze_csv, analyze_prompt, credit_cost, document_export_bytes, explain_validation, export_bytes, generate_relational, generate_tabular, get_credit_balance, get_dataset, init_db, list_datasets, list_versions, make_document, privacy_scan, save_dataset, save_version, validate
+    from .core import CREDITS_PER_THOUSAND_ROWS, FREE_PLAN_CREDITS, Config, InsufficientCreditsError, analyze_csv, analyze_prompt, credit_cost, document_export_bytes, explain_validation, export_bytes, generate_relational, generate_tabular, get_credit_balance, get_dataset, init_db, list_datasets, list_versions, make_document, migrate_legacy_firebase_owner, privacy_scan, save_dataset, save_version, validate
 else:
-    from core import CREDITS_PER_THOUSAND_ROWS, FREE_PLAN_CREDITS, Config, InsufficientCreditsError, analyze_csv, analyze_prompt, credit_cost, document_export_bytes, explain_validation, export_bytes, generate_relational, generate_tabular, get_credit_balance, get_dataset, init_db, list_datasets, list_versions, make_document, privacy_scan, save_dataset, save_version, validate
+    from core import CREDITS_PER_THOUSAND_ROWS, FREE_PLAN_CREDITS, Config, InsufficientCreditsError, analyze_csv, analyze_prompt, credit_cost, document_export_bytes, explain_validation, export_bytes, generate_relational, generate_tabular, get_credit_balance, get_dataset, init_db, list_datasets, list_versions, make_document, migrate_legacy_firebase_owner, privacy_scan, save_dataset, save_version, validate
 
 app = FastAPI(title="Hypersion Gen API", version="0.1.0")
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:5174", "http://127.0.0.1:5174"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
@@ -24,24 +25,41 @@ init_db()
 credit_plans=[{"id":"starter","name":"Starter","price_pkr":500,"credits":500},{"id":"pro","name":"Pro","price_pkr":1500,"credits":2000},{"id":"premium","name":"Premium","price_pkr":3000,"credits":5000}]
 
 
-def validate_supabase_access_token(access_token: str) -> str | None:
-    supabase_url=os.getenv("SUPABASE_URL", "").strip().rstrip("/")
-    publishable_key=os.getenv("SUPABASE_PUBLISHABLE_KEY", "").strip() or os.getenv("SUPABASE_ANON_KEY", "").strip()
-    if not supabase_url or not publishable_key:
-        raise HTTPException(503, "Supabase authentication is not configured on the server")
-    request=urllib.request.Request(f"{supabase_url}/auth/v1/user", headers={"apikey":publishable_key,"Authorization":f"Bearer {access_token}"})
+def _firebase_admin_app():
+    app_name="hypersion-api"
     try:
-        with urllib.request.urlopen(request, timeout=5) as response:
-            user=json.loads(response.read())
-            return user.get("id") if isinstance(user, dict) and isinstance(user.get("id"), str) else None
-    except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):
-            return None
-        raise HTTPException(503, "Supabase authentication could not validate the session") from exc
-    except (urllib.error.URLError, TimeoutError) as exc:
-        raise HTTPException(503, "Supabase authentication is unavailable") from exc
-    except (json.JSONDecodeError, UnicodeDecodeError):
+        return firebase_admin.get_app(app_name)
+    except ValueError:
+        pass
+    service_account_json=os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
+    if not service_account_json:
+        raise HTTPException(503, "Firebase authentication is not configured on the server")
+    try:
+        service_account=json.loads(service_account_json)
+        credential=credentials.Certificate(service_account)
+        project_id=service_account["project_id"]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise HTTPException(503, "Firebase authentication credentials are misconfigured") from exc
+    try:
+        return firebase_admin.initialize_app(credential, {"projectId":project_id}, name=app_name)
+    except ValueError:
+        return firebase_admin.get_app(app_name)
+
+
+def validate_firebase_access_token(access_token: str) -> str | None:
+    try:
+        claims=firebase_auth.verify_id_token(access_token, app=_firebase_admin_app())
+    except firebase_auth.InvalidIdTokenError:
         return None
+    except firebase_admin.exceptions.FirebaseError as exc:
+        raise HTTPException(503, "Firebase authentication could not validate the session") from exc
+    user_id=claims.get("uid")
+    email=claims.get("email")
+    if not isinstance(user_id, str) or not user_id:
+        return None
+    if claims.get("email_verified") is True and isinstance(email, str) and email.strip():
+        migrate_legacy_firebase_owner(user_id, email)
+    return user_id
 
 
 @app.middleware("http")
@@ -52,11 +70,11 @@ async def require_authenticated_user(request: Request, call_next):
     if scheme.lower() != "bearer" or not access_token.strip():
         return JSONResponse(status_code=401, content={"detail":"Sign in to access this API"})
     try:
-        user_id=await run_in_threadpool(validate_supabase_access_token, access_token.strip())
+        user_id=await run_in_threadpool(validate_firebase_access_token, access_token.strip())
     except HTTPException as exc:
         return JSONResponse(status_code=exc.status_code, content={"detail":exc.detail})
     if not user_id:
-        return JSONResponse(status_code=401, content={"detail":"The Supabase session is invalid or expired"})
+        return JSONResponse(status_code=401, content={"detail":"The Firebase session is invalid or expired"})
     request.state.user_id=user_id
     return await call_next(request)
 
